@@ -139,11 +139,18 @@ jobs:
           import net.fabricmc.loader.api.FabricLoader;
           import net.minecraft.client.MinecraftClient;
           import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.client.render.RenderTickCounter;
           import net.minecraft.client.network.ClientPlayerEntity;
           import net.minecraft.item.ItemStack;
           import net.minecraft.registry.Registries;
           import net.minecraft.screen.slot.SlotActionType;
           import java.util.Comparator;
+          import net.minecraft.client.option.KeyBinding;
+          import net.minecraft.client.util.InputUtil;
+          import net.minecraft.item.Items;
+          import org.lwjgl.glfw.GLFW;
+          import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+          import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
           import net.minecraft.client.gui.PlayerSkinDrawer;
           import net.minecraft.client.gui.screen.GameMenuScreen;
           import net.minecraft.client.gui.screen.TitleScreen;
@@ -244,11 +251,17 @@ jobs:
 
                   // GUI dibuka di tick berikutnya, supaya tidak langsung ketutup oleh chat screen
                   ClientTickEvents.END_CLIENT_TICK.register(client -> {
+                      try {
+                          HudExtras.tick(client);
+                      } catch (Throwable ignored) {
+                      }
                       if (openRequested) {
                           openRequested = false;
                           client.setScreen(new ConfigScreen(null));
                       }
                   });
+
+                  HudExtras.init();
 
                   // Daftarkan layer cosmetic ke renderer player
                   LivingEntityFeatureRendererRegistrationCallback.EVENT.register((entityType, entityRenderer, registrationHelper, context) -> {
@@ -2131,6 +2144,88 @@ jobs:
 
                   private static boolean sameItem(ItemStack a, ItemStack b) {
                       return !a.isEmpty() && !b.isEmpty() && a.getItem() == b.getItem();
+                  }
+              }
+
+              // ------------------------------------------------------------------
+              // Toggle sprint + HUD status (Sprint [toggled] dan indikator shield)
+              // ------------------------------------------------------------------
+              public static final class HudExtras {
+                  private static KeyBinding toggleKey;
+                  public static boolean sprintToggled = false;
+
+                  private HudExtras() {
+                  }
+
+                  public static void init() {
+                      toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                              "key.transparentskin.toggle_sprint",
+                              InputUtil.Type.KEYSYM,
+                              GLFW.GLFW_KEY_R,
+                              KeyBinding.Category.MISC));
+
+                      HudRenderCallback.EVENT.register((ctx, tickDelta) -> {
+                          try {
+                              render(ctx, tickDelta);
+                          } catch (Throwable ignored) {
+                          }
+                      });
+                  }
+
+                  public static void tick(MinecraftClient mc) {
+                      while (toggleKey != null && toggleKey.wasPressed()) {
+                          sprintToggled = !sprintToggled;
+                      }
+                      if (mc.player == null || mc.currentScreen != null) {
+                          return;
+                      }
+                      boolean canSprint = sprintToggled
+                              && mc.options.forwardKey.isPressed()
+                              && !mc.player.isSneaking()
+                              && mc.player.getHungerManager().getFoodLevel() > 6;
+                      if (canSprint) {
+                          mc.player.setSprinting(true);
+                      } else if (sprintToggled && !mc.options.forwardKey.isPressed()) {
+                          mc.player.setSprinting(false);
+                      }
+                  }
+
+                  private static void render(DrawContext ctx, RenderTickCounter tickCounter) {
+                      MinecraftClient mc = MinecraftClient.getInstance();
+                      if (mc.player == null || mc.options.hudHidden) {
+                          return;
+                      }
+                      int sh = ctx.getScaledWindowHeight();
+                      float delta = tickCounter.getTickProgress(true);
+
+                      // indikator shield di kiri bawah (di atas tulisan sprint)
+                      ItemStack shield = null;
+                      if (mc.player.getMainHandStack().isOf(Items.SHIELD)) {
+                          shield = mc.player.getMainHandStack();
+                      } else if (mc.player.getOffHandStack().isOf(Items.SHIELD)) {
+                          shield = mc.player.getOffHandStack();
+                      }
+                      int bottomY = sh - 12;
+                      if (sprintToggled) {
+                          ctx.drawTextWithShadow(mc.textRenderer, Text.literal("Sprint [toggled]"), 4, bottomY, 0xFFFFFFFF);
+                      }
+                      if (shield != null) {
+                          int color;
+                          if (mc.player.getItemCooldownManager().isCoolingDown(shield)) {
+                              float remain = mc.player.getItemCooldownManager().getCooldownProgress(shield, delta);
+                              color = remain > 0.4f ? 0xFFE53935 : 0xFFFFA726;
+                          } else {
+                              color = 0xFF43A047;
+                          }
+                          int x = 4;
+                          int y = bottomY - 22;
+                          // outline tipis, isi item tetap terlihat
+                          ctx.fill(x - 1, y - 1, x + 17, y, color);
+                          ctx.fill(x - 1, y + 16, x + 17, y + 17, color);
+                          ctx.fill(x - 1, y, x, y + 16, color);
+                          ctx.fill(x + 16, y, x + 17, y + 16, color);
+                          ctx.drawItem(shield, x, y);
+                      }
                   }
               }
 
