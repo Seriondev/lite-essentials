@@ -1,4 +1,261 @@
-                          Config c = Config.get();
+name: Build
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.14.3
+
+      - name: Generate project files
+        run: |
+          cat > settings.gradle <<'TS_EOF_0'
+          pluginManagement {
+              repositories {
+                  maven {
+                      name = 'Fabric'
+                      url = 'https://maven.fabricmc.net/'
+                  }
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          rootProject.name = 'transparent-skin'
+          TS_EOF_0
+          cat > build.gradle <<'TS_EOF_1'
+          plugins {
+              id 'fabric-loom' version '1.11-SNAPSHOT'
+          }
+
+          version = '1.0.7'
+          group = 'com.vizkovico'
+
+          base {
+              archivesName = 'essentials-client'
+          }
+
+          repositories {
+              mavenCentral()
+          }
+
+          dependencies {
+              minecraft "com.mojang:minecraft:1.21.10"
+              mappings "net.fabricmc:yarn:1.21.10+build.3:v2"
+              modImplementation "net.fabricmc:fabric-loader:0.17.2"
+              modImplementation "net.fabricmc.fabric-api:fabric-api:0.138.4+1.21.10"
+              include "javazoom:jlayer:1.0.1"
+              implementation "javazoom:jlayer:1.0.1"
+          }
+
+          processResources {
+              inputs.property "version", project.version
+
+              filesMatching("fabric.mod.json") {
+                  expand "version": project.version
+              }
+          }
+
+          tasks.withType(JavaCompile).configureEach {
+              it.options.release = 21
+          }
+
+          java {
+              sourceCompatibility = JavaVersion.VERSION_21
+              targetCompatibility = JavaVersion.VERSION_21
+          }
+          TS_EOF_1
+          mkdir -p src/main/resources
+          cat > src/main/resources/fabric.mod.json <<'TS_EOF_2'
+          {
+            "schemaVersion": 1,
+            "id": "transparentskin",
+            "version": "${version}",
+            "name": "Essentials Client",
+            "description": "Client-side tools: skin transparan (opacity dan hide bagian tubuh), cosmetic dari file Blockbench, wardrobe skin, preview karakter, akun offline, inventory sorter, dan toggle sprint. Buka menu dengan /ts. Lihat changelog di release.",
+            "authors": [
+              "Anonymous"
+            ],
+            "license": "MIT",
+            "environment": "client",
+            "entrypoints": {
+              "client": [
+                "com.vizkovico.transparentskin.TransparentSkinMod"
+              ]
+            },
+            "mixins": [
+              "transparentskin.mixins.json"
+            ],
+            "depends": {
+              "fabricloader": ">=0.16.0",
+              "minecraft": "1.21.10",
+              "java": ">=21",
+              "fabric-api": "*"
+            }
+          }
+          TS_EOF_2
+          mkdir -p src/main/resources
+          cat > src/main/resources/transparentskin.mixins.json <<'TS_EOF_3'
+          {
+            "required": true,
+            "minVersion": "0.8",
+            "package": "com.vizkovico.transparentskin.mixin",
+            "compatibilityLevel": "JAVA_21",
+            "mixins": [],
+            "client": [
+              "ModelPartMixin",
+              "PlayerEntityModelMixin",
+              "ScreenInvoker",
+              "AbstractClientPlayerEntityMixin"
+            ],
+            "injectors": {
+              "defaultRequire": 0
+            }
+          }
+          TS_EOF_3
+          mkdir -p src/main/java/com/vizkovico/transparentskin
+          cat > src/main/java/com/vizkovico/transparentskin/TransparentSkinMod.java <<'TS_EOF_4'
+          package com.vizkovico.transparentskin;
+
+          import com.google.gson.Gson;
+          import com.google.gson.GsonBuilder;
+          import com.google.gson.JsonArray;
+          import com.google.gson.JsonElement;
+          import com.google.gson.JsonObject;
+          import com.google.gson.JsonParser;
+          import com.mojang.authlib.GameProfile;
+          import net.fabricmc.api.ClientModInitializer;
+          import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
+          import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+          import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
+          import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+          import net.fabricmc.fabric.api.client.rendering.v1.LivingEntityFeatureRendererRegistrationCallback;
+          import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+          import net.fabricmc.loader.api.FabricLoader;
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.client.render.RenderTickCounter;
+          import net.minecraft.client.network.ClientPlayerEntity;
+          import net.minecraft.registry.Registries;
+          import net.minecraft.screen.slot.SlotActionType;
+          import java.util.Comparator;
+          import net.minecraft.client.option.KeyBinding;
+          import net.minecraft.client.util.InputUtil;
+          import org.lwjgl.glfw.GLFW;
+          import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+          import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+          import java.io.ByteArrayOutputStream;
+          import java.nio.ByteBuffer;
+          import java.nio.ByteOrder;
+          import java.util.concurrent.CompletableFuture;
+          import org.lwjgl.openal.AL10;
+          import javazoom.jl.decoder.Bitstream;
+          import javazoom.jl.decoder.Decoder;
+          import javazoom.jl.decoder.Header;
+          import javazoom.jl.decoder.SampleBuffer;
+          import net.minecraft.client.gui.PlayerSkinDrawer;
+          import net.minecraft.client.gui.screen.GameMenuScreen;
+          import net.minecraft.client.gui.screen.TitleScreen;
+          import net.minecraft.client.gui.screen.Screen;
+          import net.minecraft.client.gui.screen.ingame.InventoryScreen;
+          import net.minecraft.client.gui.widget.ButtonWidget;
+          import net.minecraft.client.gui.widget.ClickableWidget;
+          import net.minecraft.client.gui.widget.PlayerSkinWidget;
+          import net.minecraft.client.gui.widget.TextFieldWidget;
+          import net.minecraft.client.gui.widget.SliderWidget;
+          import net.minecraft.client.model.Dilation;
+          import net.minecraft.client.model.ModelData;
+          import net.minecraft.client.model.ModelPart;
+          import net.minecraft.client.model.ModelPartBuilder;
+          import net.minecraft.client.model.ModelPartData;
+          import net.minecraft.client.model.ModelTransform;
+          import net.minecraft.client.model.TexturedModelData;
+          import net.minecraft.client.session.Session;
+          import net.minecraft.client.render.entity.model.LoadedEntityModels;
+          import net.minecraft.client.util.DefaultSkinHelper;
+          import net.minecraft.entity.player.PlayerSkinType;
+          import net.minecraft.entity.player.SkinTextures;
+          import net.minecraft.util.AssetInfo;
+          import net.minecraft.client.render.OverlayTexture;
+          import net.minecraft.client.render.RenderLayer;
+          import net.minecraft.client.render.command.OrderedRenderCommandQueue;
+          import net.minecraft.client.render.entity.PlayerEntityRenderer;
+          import net.minecraft.client.render.entity.feature.FeatureRenderer;
+          import net.minecraft.client.render.entity.feature.FeatureRendererContext;
+          import net.minecraft.client.render.entity.model.EntityModel;
+          import net.minecraft.client.render.entity.model.PlayerEntityModel;
+          import net.minecraft.client.render.entity.state.PlayerEntityRenderState;
+          import net.minecraft.client.texture.NativeImage;
+          import net.minecraft.client.texture.NativeImageBackedTexture;
+          import net.minecraft.client.util.math.MatrixStack;
+          import com.vizkovico.transparentskin.mixin.ScreenInvoker;
+          import net.minecraft.text.Text;
+          import net.minecraft.util.Identifier;
+
+          import java.io.ByteArrayInputStream;
+          import java.io.InputStream;
+          import java.io.Reader;
+          import java.lang.reflect.Field;
+          import java.lang.reflect.Modifier;
+          import java.nio.charset.StandardCharsets;
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.util.ArrayList;
+          import java.util.Base64;
+          import java.util.HashMap;
+          import java.util.List;
+          import java.util.Map;
+          import java.util.Optional;
+          import java.util.UUID;
+          import java.util.function.IntConsumer;
+          import java.util.function.Supplier;
+          import java.util.stream.Stream;
+
+          public class TransparentSkinMod implements ClientModInitializer {
+
+              private static boolean openRequested = false;
+
+              @Override
+              public void onInitializeClient() {
+                  Config.load();
+
+                  ClientLifecycleEvents.CLIENT_STARTED.register(client -> {
+                      Cosmetics.reload();
+                      Skins.reload();
+                      Music.reload();
+                      try {
+                          String cur = Config.get().currentAccount;
+                          if (cur != null && !cur.isEmpty()) {
+                              Accounts.switchTo(cur);
+                          }
+                      } catch (Throwable ignored) {
+                      }
+                  });
+
+                  ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
+                      String[] names = {"ts", "tskin"};
+                      for (String name : names) {
+                          dispatcher.register(
+                                  ClientCommandManager.literal(name)
+                                          .executes(ctx -> {
+                                              openRequested = true;
+                                              return 1;
+                                          })
+                                          .then(ClientCommandManager.literal("toggle").executes(ctx -> {
+                                              Config c = Config.get();
                                               c.enabled = !c.enabled;
                                               Config.save();
                                               ctx.getSource().sendFeedback(Text.literal("Skin transparan: " + (c.enabled ? "ON" : "OFF")));
@@ -12,6 +269,10 @@
                   ClientTickEvents.END_CLIENT_TICK.register(client -> {
                       try {
                           HudExtras.tick(client);
+                      } catch (Throwable ignored) {
+                      }
+                      try {
+                          Music.tick();
                       } catch (Throwable ignored) {
                       }
                       if (openRequested) {
@@ -79,6 +340,7 @@
               private static final int ICON_FOLDER = 3;
               private static final int ICON_HEAD = 4;
               private static final int ICON_ARROW = 5;
+              private static final int ICON_NOTE = 6;
 
               private static final class Spec {
                   final int x;
@@ -133,6 +395,8 @@
                   int setY = Math.round(222f / 360f * sh);
                   specs.add(new Spec(rightX, setY, 80, 20, "Settings", ICON_SLIDERS,
                           () -> client.setScreen(new ConfigScreen(screen))));
+                  specs.add(new Spec(rightX - 46, setY, 19, 20, "", ICON_NOTE,
+                          () -> client.setScreen(new MusicScreen(screen))));
                   specs.add(new Spec(rightX - 23, setY, 19, 20, "", ICON_FOLDER,
                           () -> client.setScreen(new ConfigScreen(screen, 2))));
 
@@ -246,6 +510,10 @@
                                       "hhhhhhhh", "hhhhhhhh", "hssssssh", "sbssssbs", "ssssssss", "ssssssss", "ssssssss", "ssssssss"});
                           }
                           break;
+                      case ICON_NOTE:
+                          art(ctx, sp.x + (sp.w - 6) / 2, sp.y + 5, new String[]{
+                                  "..###", "..#.#", "..#.#", "##.##", "###.."});
+                          break;
                       case ICON_ARROW:
                           art(ctx, sp.x + (sp.w - 7) / 2, sp.y + 8, new String[]{
                                   "#.....#", ".#...#.", "..#.#..", "...#..."});
@@ -283,6 +551,8 @@
                   public int previewSize = 100;
                   public String selectedSkin = "";
                   public Map<String, Boolean> skinSlim = new HashMap<>();
+                  public List<String> playlist = new ArrayList<>();
+                  public int musicVolume = 80;
                   public List<String> accounts = new ArrayList<>();
                   public String currentAccount = "";
 
@@ -342,6 +612,10 @@
                       if (skinSlim == null) {
                           skinSlim = new HashMap<>();
                       }
+                      if (playlist == null) {
+                          playlist = new ArrayList<>();
+                      }
+                      musicVolume = Math.max(0, Math.min(100, musicVolume));
                       if (accounts == null) {
                           accounts = new ArrayList<>();
                       }
@@ -1957,33 +2231,410 @@
                       int sh = ctx.getScaledWindowHeight();
                       float delta = tickCounter.getTickProgress(true);
 
-                      // indikator shield di kiri bawah (di atas tulisan sprint)
-                      ItemStack shield = null;
-                      if (mc.player.getMainHandStack().isOf(Items.SHIELD)) {
-                          shield = mc.player.getMainHandStack();
-                      } else if (mc.player.getOffHandStack().isOf(Items.SHIELD)) {
-                          shield = mc.player.getOffHandStack();
-                      }
                       int bottomY = sh - 12;
                       if (sprintToggled) {
                           ctx.drawTextWithShadow(mc.textRenderer, Text.literal("Sprint [toggled]"), 4, bottomY, 0xFFFFFFFF);
                       }
-                      if (shield != null) {
-                          int color;
-                          if (mc.player.getItemCooldownManager().isCoolingDown(shield)) {
-                              float remain = mc.player.getItemCooldownManager().getCooldownProgress(shield, delta);
-                              color = remain > 0.4f ? 0xFFE53935 : 0xFFFFA726;
-                          } else {
-                              color = 0xFF43A047;
+                  }
+              }
+
+              // ------------------------------------------------------------------
+              // Music player: MP3 dari config/transparent-skin/music, diputar lewat OpenAL
+              // ------------------------------------------------------------------
+              public static final class Music {
+                  public static final List<String> LIBRARY = new ArrayList<>();
+                  private static final Map<String, CompletableFuture<Pcm>> LOADING = new HashMap<>();
+                  private static int source = -1;
+                  private static int buffer = -1;
+                  private static String loaded = null;
+                  private static String wantPlay = null;
+                  private static boolean playing = false;
+                  public static String error = "";
+
+                  private record Pcm(ByteBuffer data, int rate, int format) {
+                  }
+
+                  private Music() {
+                  }
+
+                  public static Path dir() {
+                      return FabricLoader.getInstance().getConfigDir().resolve("transparent-skin").resolve("music");
+                  }
+
+                  public static void reload() {
+                      LIBRARY.clear();
+                      try {
+                          Files.createDirectories(dir());
+                          try (Stream<Path> st = Files.list(dir())) {
+                              List<Path> files = new ArrayList<>();
+                              st.forEach(files::add);
+                              files.sort((a, b) -> a.getFileName().toString().compareToIgnoreCase(b.getFileName().toString()));
+                              for (Path p : files) {
+                                  String fn = p.getFileName().toString();
+                                  if (fn.toLowerCase().endsWith(".mp3")) {
+                                      LIBRARY.add(fn);
+                                  }
+                              }
                           }
-                          int x = 4;
-                          int y = bottomY - 22;
-                          // outline tipis, isi item tetap terlihat
-                          ctx.fill(x - 1, y - 1, x + 17, y, color);
-                          ctx.fill(x - 1, y + 16, x + 17, y + 17, color);
-                          ctx.fill(x - 1, y, x, y + 16, color);
-                          ctx.fill(x + 16, y, x + 17, y + 16, color);
-                          ctx.drawItem(shield, x, y);
+                      } catch (Throwable t) {
+                          error = String.valueOf(t.getMessage());
+                      }
+                  }
+
+                  public static String current() {
+                      return loaded;
+                  }
+
+                  public static boolean isPlaying() {
+                      return playing;
+                  }
+
+                  private static Pcm decode(String name) throws Exception {
+                      Path p = dir().resolve(name);
+                      ByteArrayOutputStream out = new ByteArrayOutputStream();
+                      int rate = 44100;
+                      int ch = 2;
+                      try (InputStream in = Files.newInputStream(p)) {
+                          Bitstream bs = new Bitstream(in);
+                          Decoder dec = new Decoder();
+                          Header h;
+                          while ((h = bs.readFrame()) != null) {
+                              SampleBuffer sb = (SampleBuffer) dec.decodeFrame(h, bs);
+                              rate = sb.getSampleFrequency();
+                              ch = sb.getChannelCount();
+                              short[] pcm = sb.getBuffer();
+                              int len = sb.getBufferLength();
+                              for (int i = 0; i < len; i++) {
+                                  short v = pcm[i];
+                                  out.write(v & 0xFF);
+                                  out.write((v >> 8) & 0xFF);
+                              }
+                              bs.closeFrame();
+                          }
+                      }
+                      byte[] raw = out.toByteArray();
+                      ByteBuffer bb = ByteBuffer.allocateDirect(raw.length).order(ByteOrder.nativeOrder());
+                      bb.put(raw).flip();
+                      int fmt = ch == 1 ? AL10.AL_FORMAT_MONO16 : AL10.AL_FORMAT_STEREO16;
+                      return new Pcm(bb, rate, fmt);
+                  }
+
+                  private static void ensureSource() {
+                      if (source < 0) {
+                          source = AL10.alGenSources();
+                          buffer = AL10.alGenBuffers();
+                      }
+                  }
+
+                  public static void applyVolume() {
+                      if (source >= 0) {
+                          AL10.alSourcef(source, AL10.AL_GAIN, Config.get().musicVolume / 100f);
+                      }
+                  }
+
+                  public static void play(String name) {
+                      wantPlay = name;
+                      LOADING.computeIfAbsent(name, n -> CompletableFuture.supplyAsync(() -> {
+                          try {
+                              return decode(n);
+                          } catch (Exception e) {
+                              throw new RuntimeException(e);
+                          }
+                      }));
+                  }
+
+                  public static void togglePause() {
+                      if (loaded == null && wantPlay == null) {
+                          List<String> pl = Config.get().playlist;
+                          String first = !pl.isEmpty() ? pl.get(0) : (!LIBRARY.isEmpty() ? LIBRARY.get(0) : null);
+                          if (first != null) {
+                              play(first);
+                          }
+                          return;
+                      }
+                      if (source < 0) {
+                          return;
+                      }
+                      if (playing) {
+                          AL10.alSourcePause(source);
+                          playing = false;
+                      } else if (loaded != null) {
+                          AL10.alSourcePlay(source);
+                          playing = true;
+                      }
+                  }
+
+                  private static List<String> order() {
+                      List<String> pl = Config.get().playlist;
+                      return pl.isEmpty() ? LIBRARY : pl;
+                  }
+
+                  public static void next() {
+                      List<String> list = order();
+                      if (list.isEmpty()) {
+                          return;
+                      }
+                      int idx = loaded == null ? -1 : list.indexOf(loaded);
+                      play(list.get((idx + 1) % list.size()));
+                  }
+
+                  public static void prev() {
+                      List<String> list = order();
+                      if (list.isEmpty()) {
+                          return;
+                      }
+                      int idx = loaded == null ? 0 : list.indexOf(loaded);
+                      play(list.get((idx - 1 + list.size()) % list.size()));
+                  }
+
+                  public static void tick() {
+                      if (wantPlay != null) {
+                          CompletableFuture<Pcm> f = LOADING.get(wantPlay);
+                          if (f != null && f.isDone()) {
+                              String name = wantPlay;
+                              wantPlay = null;
+                              LOADING.remove(name);
+                              try {
+                                  Pcm pcm = f.join();
+                                  ensureSource();
+                                  AL10.alSourceStop(source);
+                                  AL10.alSourcei(source, AL10.AL_BUFFER, 0);
+                                  AL10.alBufferData(buffer, pcm.format(), pcm.data(), pcm.rate());
+                                  AL10.alSourcei(source, AL10.AL_BUFFER, buffer);
+                                  loaded = name;
+                                  applyVolume();
+                                  AL10.alSourcePlay(source);
+                                  playing = true;
+                                  error = "";
+                              } catch (Throwable t) {
+                                  error = "gagal: " + t.getMessage();
+                                  playing = false;
+                              }
+                          }
+                      }
+                      if (playing && source >= 0 && AL10.alGetSourcei(source, AL10.AL_SOURCE_STATE) == AL10.AL_STOPPED) {
+                          playing = false;
+                          next();
+                      }
+                  }
+              }
+
+              public static final class MusicScreen extends Screen {
+                  private static final int BLUE_M = 0xFF1F4E8C;
+                  private static final int BLUE_HOVER_M = 0xFF2B63AE;
+                  private static final int BLUE_LINE_M = 0xFF3C8DF0;
+
+                  private final Screen parent;
+                  private int tab = 0;
+                  private int pageIdx = 0;
+                  private String status = "";
+                  private int px;
+                  private int py;
+                  private int pw;
+                  private int ph;
+                  private int sideW;
+                  private int rightX;
+                  private int rightW;
+                  private int listX;
+                  private int listY;
+                  private int listW;
+                  private int rowsN;
+
+                  public MusicScreen(Screen parent) {
+                      super(Text.literal("Music"));
+                      this.parent = parent;
+                  }
+
+                  private ButtonWidget invisible(int x, int y, int w, int h, Runnable action) {
+                      ButtonWidget b = ButtonWidget.builder(Text.empty(), btn -> action.run()).dimensions(x, y, w, h).build();
+                      b.setAlpha(0f);
+                      this.addDrawableChild(b);
+                      return b;
+                  }
+
+                  private List<String> entries() {
+                      return tab == 0 ? new ArrayList<>(Music.LIBRARY) : new ArrayList<>(Config.get().playlist);
+                  }
+
+                  @Override
+                  protected void init() {
+                      Music.reload();
+                      int w = this.width;
+                      int h = this.height;
+                      px = Math.round(w * 0.07f);
+                      py = Math.round(h * 0.126f);
+                      pw = w - 2 * px;
+                      ph = Math.round(h * 0.76f);
+                      sideW = Math.round(pw * 0.135f);
+                      rightW = Math.min(170, Math.round(pw * 0.3f));
+                      rightX = px + pw - rightW;
+                      listX = px + sideW + 6;
+                      listW = rightX - listX - 8;
+                      listY = py + 30;
+                      rowsN = Math.max(3, (ph - 70) / 22);
+
+                      invisible(Math.max(4, px - 26), py + 2, 20, 20, this::close);
+                      invisible(px, py + 26, sideW, 20, () -> {
+                          tab = 0;
+                          pageIdx = 0;
+                          this.clearAndInit();
+                      });
+                      invisible(px, py + 48, sideW, 20, () -> {
+                          tab = 1;
+                          pageIdx = 0;
+                          this.clearAndInit();
+                      });
+
+                      int cy = py + ph / 2 - 20;
+                      int cx = rightX + rightW / 2;
+                      invisible(cx - 50, cy, 30, 20, Music::prev);
+                      invisible(cx - 10, cy, 20, 20, Music::togglePause);
+                      invisible(cx + 20, cy, 30, 20, Music::next);
+                      this.addDrawableChild(new RangeSlider(rightX + 10, cy + 30, rightW - 20, 20, "Volume", 0, 100,
+                              Config.get().musicVolume, v -> {
+                                  Config.get().musicVolume = v;
+                                  Music.applyVolume();
+                              }));
+
+                      List<String> list = entries();
+                      int pages = Math.max(1, (list.size() + rowsN - 1) / rowsN);
+                      if (pageIdx >= pages) {
+                          pageIdx = pages - 1;
+                      }
+                      if (pageIdx < 0) {
+                          pageIdx = 0;
+                      }
+                      for (int i = 0; i < rowsN; i++) {
+                          int idx = pageIdx * rowsN + i;
+                          if (idx >= list.size()) {
+                              break;
+                          }
+                          String name = list.get(idx);
+                          int y = listY + i * 22;
+                          invisible(listX, y, listW - 26, 20, () -> Music.play(name));
+                          if (tab == 0) {
+                              invisible(listX + listW - 22, y, 20, 20, () -> {
+                                  List<String> pl = Config.get().playlist;
+                                  if (!pl.contains(name)) {
+                                      pl.add(name);
+                                      Config.save();
+                                  }
+                                  this.clearAndInit();
+                              });
+                          } else {
+                              invisible(listX + listW - 22, y, 20, 20, () -> {
+                                  Config.get().playlist.remove(name);
+                                  Config.save();
+                                  this.clearAndInit();
+                              });
+                          }
+                      }
+                      int ny = listY + rowsN * 22 + 4;
+                      invisible(listX, ny, 24, 20, () -> {
+                          if (pageIdx > 0) {
+                              pageIdx--;
+                              this.clearAndInit();
+                          }
+                      });
+                      invisible(listX + listW - 24, ny, 24, 20, () -> {
+                          pageIdx++;
+                          this.clearAndInit();
+                      });
+                  }
+
+                  private void btn(DrawContext c, int x, int y, int w, int h, String label, boolean hover, boolean active, boolean blue) {
+                      int fill = blue ? (hover ? BLUE_HOVER_M : BLUE_M) : (active ? 0xFF38383D : (hover ? 0xFF303035 : 0xFF26262A));
+                      c.fill(x, y, x + w, y + h, fill);
+                      if (active && !blue) {
+                          c.fill(x, y + h - 1, x + w, y + h, BLUE_LINE_M);
+                      }
+                      int tw = this.textRenderer.getWidth(label);
+                      c.drawTextWithShadow(this.textRenderer, Text.literal(label), x + (w - tw) / 2, y + (h - 8) / 2, 0xFFFFFFFF);
+                  }
+
+                  private boolean hov(int mx, int my, int x, int y, int w, int h) {
+                      return mx >= x && mx < x + w && my >= y && my < y + h;
+                  }
+
+                  @Override
+                  public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
+                      // digambar manual di render()
+                  }
+
+                  @Override
+                  public void render(DrawContext c, int mx, int my, float delta) {
+                      c.fill(0, 0, this.width, this.height, 0xFF101010);
+                      c.fill(px, py, px + pw, py + ph, 0xFF1A1A1C);
+                      c.fill(px, py, px + pw, py + 22, 0xFF202023);
+                      c.fill(px + sideW, py + 22, px + sideW + 1, py + ph, 0xFF2E2E32);
+                      c.fill(rightX - 1, py + 22, rightX, py + ph, 0xFF2E2E32);
+
+                      super.render(c, mx, my, delta);
+
+                      int bx = Math.max(4, px - 26);
+                      btn(c, bx, py + 2, 20, 20, "<", hov(mx, my, bx, py + 2, 20, 20), false, false);
+                      c.drawTextWithShadow(this.textRenderer, Text.literal("Music"), px + 8, py + 7, 0xFFFFFFFF);
+
+                      btn(c, px + 2, py + 26, sideW - 4, 20, "Library", hov(mx, my, px + 2, py + 26, sideW - 4, 20), tab == 0, false);
+                      btn(c, px + 2, py + 48, sideW - 4, 20, "Playlist", hov(mx, my, px + 2, py + 48, sideW - 4, 20), tab == 1, false);
+
+                      List<String> list = entries();
+                      int per = rowsN;
+                      int pages = Math.max(1, (list.size() + per - 1) / per);
+                      String cur = Music.current();
+                      for (int i = 0; i < per; i++) {
+                          int idx = pageIdx * per + i;
+                          if (idx >= list.size()) {
+                              break;
+                          }
+                          String name = list.get(idx);
+                          int y = listY + i * 22;
+                          boolean isCur = name.equals(cur);
+                          c.fill(listX, y, listX + listW, y + 20, isCur ? 0xFF243A57 : 0xFF222226);
+                          String shown = name.length() > 28 ? name.substring(0, 27) + "." : name;
+                          c.drawTextWithShadow(this.textRenderer, Text.literal(shown), listX + 5, y + 6, 0xFFFFFFFF);
+                          int ax = listX + listW - 22;
+                          btn(c, ax, y, 20, 20, tab == 0 ? "+" : "X", hov(mx, my, ax, y, 20, 20), false, false);
+                      }
+                      int ny = listY + per * 22 + 4;
+                      btn(c, listX, ny, 24, 20, "<", hov(mx, my, listX, ny, 24, 20), false, false);
+                      btn(c, listX + listW - 24, ny, 24, 20, ">", hov(mx, my, listX + listW - 24, ny, 24, 20), false, false);
+                      c.drawCenteredTextWithShadow(this.textRenderer, Text.literal((pageIdx + 1) + "/" + pages),
+                              listX + listW / 2, ny + 6, 0xFFAAAAAA);
+
+                      c.drawTextWithShadow(this.textRenderer, Text.literal("Sedang diputar"), rightX + 10, py + 34, 0xFF9A9AA0);
+                      String np = cur == null ? "-" : cur;
+                      if (np.length() > 22) {
+                          np = np.substring(0, 21) + ".";
+                      }
+                      c.drawTextWithShadow(this.textRenderer, Text.literal(np), rightX + 10, py + 46, 0xFFFFFFFF);
+
+                      int cy = py + ph / 2 - 20;
+                      int cx = rightX + rightW / 2;
+                      btn(c, cx - 50, cy, 30, 20, "<<", hov(mx, my, cx - 50, cy, 30, 20), false, false);
+                      btn(c, cx - 10, cy, 20, 20, Music.isPlaying() ? "||" : ">", hov(mx, my, cx - 10, cy, 20, 20), false, true);
+                      btn(c, cx + 20, cy, 30, 20, ">>", hov(mx, my, cx + 20, cy, 30, 20), false, false);
+
+                      String line = Music.error.isEmpty() ? status : Music.error;
+                      if (list.isEmpty() && tab == 0) {
+                          line = "Taruh file .mp3 di config/transparent-skin/music lalu buka lagi";
+                      }
+                      if (!line.isEmpty()) {
+                          c.drawCenteredTextWithShadow(this.textRenderer, Text.literal(line), this.width / 2,
+                                  Math.min(this.height - 10, py + ph + 6), 0xFFAAAAAA);
+                      }
+                  }
+
+                  @Override
+                  public boolean shouldPause() {
+                      return false;
+                  }
+
+                  @Override
+                  public void close() {
+                      Config.save();
+                      if (this.client != null) {
+                          this.client.setScreen(this.parent);
                       }
                   }
               }
