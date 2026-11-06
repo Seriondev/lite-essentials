@@ -139,6 +139,11 @@ jobs:
           import net.fabricmc.loader.api.FabricLoader;
           import net.minecraft.client.MinecraftClient;
           import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.client.network.ClientPlayerEntity;
+          import net.minecraft.item.ItemStack;
+          import net.minecraft.registry.Registries;
+          import net.minecraft.screen.slot.SlotActionType;
+          import java.util.Comparator;
           import net.minecraft.client.gui.PlayerSkinDrawer;
           import net.minecraft.client.gui.screen.GameMenuScreen;
           import net.minecraft.client.gui.screen.TitleScreen;
@@ -263,8 +268,31 @@ jobs:
                   ScreenEvents.AFTER_INIT.register((client, screen, scaledWidth, scaledHeight) -> {
                       try {
                           buildMenuUi(client, screen, scaledWidth, scaledHeight);
+                          if (screen instanceof InventoryScreen) {
+                              addSorterButton(client, screen, scaledWidth, scaledHeight);
+                          }
                       } catch (Throwable t) {
                           Cosmetics.error = String.valueOf(t);
+                      }
+                  });
+              }
+
+              private static void addSorterButton(MinecraftClient client, Screen screen, int sw, int sh) {
+                  int left = (sw - 176) / 2;
+                  int top = (sh - 166) / 2;
+                  int bx = left + 158;
+                  int by = top + 4;
+                  addWidget(screen, ButtonWidget.builder(Text.empty(), btn -> InvSorter.sort(client))
+                          .dimensions(bx, by, 12, 12).build());
+                  ScreenEvents.afterRender(screen).register((s2, ctx, mx, my, td) -> {
+                      try {
+                          boolean hover = mx >= bx && mx < bx + 12 && my >= by && my < by + 12;
+                          ctx.fill(bx, by, bx + 12, by + 12, hover ? 0xFF3E3E44 : 0xFF2B2B30);
+                          ctx.fill(bx, by, bx + 12, by + 1, 0xFF58585E);
+                          ctx.fill(bx + 2, by + 3, bx + 10, by + 4, 0xFFE8E8E8);
+                          ctx.fill(bx + 2, by + 6, bx + 8, by + 7, 0xFFE8E8E8);
+                          ctx.fill(bx + 2, by + 9, bx + 6, by + 10, 0xFFE8E8E8);
+                      } catch (Throwable ignored) {
                       }
                   });
               }
@@ -2016,6 +2044,93 @@ jobs:
                   public void removed() {
                       Config.save();
                       super.removed();
+                  }
+              }
+
+              // ------------------------------------------------------------------
+              // Inventory sorter: rapikan slot inventory utama (9..35) dengan satu klik
+              // ------------------------------------------------------------------
+              public static final class InvSorter {
+                  private static final int FIRST = 9;
+                  private static final int COUNT = 27;
+
+                  private InvSorter() {
+                  }
+
+                  public static void sort(MinecraftClient mc) {
+                      ClientPlayerEntity player = mc.player;
+                      if (player == null || mc.interactionManager == null) {
+                          return;
+                      }
+                      int syncId = player.currentScreenHandler.syncId;
+                      for (int guard = 0; guard < 400; guard++) {
+                          List<ItemStack> target = targetLayout(player);
+                          int move = -1;
+                          int from = -1;
+                          for (int p = 0; p < COUNT; p++) {
+                              ItemStack want = target.get(p);
+                              ItemStack cur = player.getInventory().getStack(FIRST + p);
+                              if (sameStack(cur, want)) {
+                                  continue;
+                              }
+                              if (want.isEmpty()) {
+                                  break;
+                              }
+                              for (int q = p + 1; q < COUNT && from < 0; q++) {
+                                  if (sameStack(player.getInventory().getStack(FIRST + q), want)) {
+                                      from = q;
+                                  }
+                              }
+                              for (int q = p + 1; q < COUNT && from < 0; q++) {
+                                  if (sameItem(player.getInventory().getStack(FIRST + q), want)) {
+                                      from = q;
+                                  }
+                              }
+                              if (from >= 0) {
+                                  move = p;
+                              }
+                              break;
+                          }
+                          if (move < 0) {
+                              return;
+                          }
+                          // ambil dari sumber, taruh di tujuan (tukar/gabung), lalu kembalikan sisa ke sumber
+                          click(mc, syncId, FIRST + from);
+                          click(mc, syncId, FIRST + move);
+                          click(mc, syncId, FIRST + from);
+                      }
+                  }
+
+                  private static void click(MinecraftClient mc, int syncId, int slot) {
+                      mc.interactionManager.clickSlot(syncId, slot, 0, SlotActionType.PICKUP, mc.player);
+                  }
+
+                  private static List<ItemStack> targetLayout(ClientPlayerEntity player) {
+                      List<ItemStack> list = new ArrayList<>();
+                      for (int i = 0; i < COUNT; i++) {
+                          ItemStack s = player.getInventory().getStack(FIRST + i);
+                          if (!s.isEmpty()) {
+                              list.add(s.copy());
+                          }
+                      }
+                      list.sort(Comparator
+                              .comparing((ItemStack s) -> Registries.ITEM.getId(s.getItem()).toString())
+                              .thenComparing(Comparator.comparingInt(ItemStack::getCount).reversed()));
+                      while (list.size() < COUNT) {
+                          list.add(ItemStack.EMPTY);
+                      }
+                      return list;
+                  }
+
+                  private static boolean sameStack(ItemStack a, ItemStack b) {
+                      if (a.isEmpty() || b.isEmpty()) {
+                          return a.isEmpty() && b.isEmpty();
+                      }
+                      return ItemStack.areItemsAndComponentsEqual(a, b) && a.getCount() == b.getCount();
+                  }
+
+                  private static boolean sameItem(ItemStack a, ItemStack b) {
+                      return !a.isEmpty() && !b.isEmpty() && a.getItem() == b.getItem();
                   }
               }
 
